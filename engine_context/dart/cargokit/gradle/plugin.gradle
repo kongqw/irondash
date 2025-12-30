@@ -106,39 +106,46 @@ class CargoKitPlugin implements Plugin<Project> {
 
     @Override
     void apply(Project project) {
-        def plugin = findFlutterPlugin(project.rootProject);
+        // 1. 注释掉原有的自动查找逻辑
+        // def plugin = findFlutterPlugin(project.rootProject);
 
         project.extensions.create("cargokit", CargoKitExtension)
 
+        // 2. 强行创建一个“伪插件环境”，直接指向当前项目
+        // 在混编环境下，我们要确保能拿到 android 的配置
+        def targetProject = project 
+        
+        // 3. 删掉这个 if 判断，强行往下走
+        /*
         if (plugin == null) {
             print("Flutter plugin not found, CargoKit plugin will not be applied.")
             return;
         }
+        */
 
         def cargoBuildDir = "${project.buildDir}/build"
 
-        // Determine if the project is an application or library
-        def isApplication = plugin.project.plugins.hasPlugin('com.android.application')
-        def variants = isApplication ? plugin.project.android.applicationVariants : plugin.project.android.libraryVariants
+        // 4. 修改这里的逻辑，不再从 plugin 变量获取，而是直接从 project 获取
+        // 判断是 Application 还是 Library
+        def isApplication = project.plugins.hasPlugin('com.android.application')
+        def variants = isApplication ? project.android.applicationVariants : project.android.libraryVariants
 
         variants.all { variant ->
-
             final buildType = variant.buildType.name
 
             def cargoOutputDir = "${project.buildDir}/jniLibs/${buildType}";
             def jniLibs = project.android.sourceSets.maybeCreate(buildType).jniLibs;
             jniLibs.srcDir(new File(cargoOutputDir))
 
-            def platforms = com.flutter.gradle.FlutterPluginUtils.getTargetPlatforms(project).collect()
+            // 5. 这里的 platforms 比较麻烦，因为用到了 Flutter 内部工具类
+            // 为了验证，我们直接手动写死 targetPlatforms
+            def platforms = ["android-arm", "android-arm64"] 
 
-            // Same thing addFlutterDependencies does in flutter.gradle
             if (buildType == "debug") {
                 platforms.add("android-x86")
                 platforms.add("android-x64")
             }
 
-            // The task name depends on plugin properties, which are not available
-            // at this point
             project.getGradle().afterProject {
                 def taskName = "cargokitCargoBuild${project.cargokit.libname.capitalize()}${buildType.capitalize()}";
 
@@ -146,25 +153,28 @@ class CargoKitPlugin implements Plugin<Project> {
                     return
                 }
 
-                if (plugin.project.android.ndkVersion == null) {
-                    throw new GradleException("Please set 'android.ndkVersion' in 'app/build.gradle'.")
+                // 6. 同样直接从当前 project 拿 NDK 版本
+                if (project.android.ndkVersion == null) {
+                     // 如果这里报错，就在插件自己的 build.gradle 顶部写死：android.ndkVersion = "26.1.10909125"
+                     throw new GradleException("Please set 'android.ndkVersion' in project build.gradle.")
                 }
 
                 def task = project.tasks.create(taskName, CargoKitBuildTask.class) {
                     buildMode = variant.buildType.name
                     buildDir = cargoBuildDir
                     outputDir = cargoOutputDir
-                    ndkVersion = plugin.project.android.ndkVersion
-                    sdkDirectory = plugin.project.android.sdkDirectory
-                    minSdkVersion = plugin.project.android.defaultConfig.minSdkVersion.apiLevel as int
-                    compileSdkVersion = plugin.project.android.compileSdkVersion.substring(8) as int
+                    // 修改为直接取 project 的属性
+                    ndkVersion = project.android.ndkVersion
+                    sdkDirectory = project.android.sdkDirectory
+                    minSdkVersion = project.android.defaultConfig.minSdkVersion.apiLevel as int
+                    // 适配不同版本的 compileSdkVersion 获取方式
+                    compileSdkVersion = project.android.compileSdkVersion.replaceAll("[^0-9]", "") as int
                     targetPlatforms = platforms
                     pluginFile = CargoKitPlugin.file
                 }
                 def onTask = { newTask ->
                     if (newTask.name == "merge${buildType.capitalize()}NativeLibs") {
                         newTask.dependsOn task
-                        // Fix gradle 7.4.2 not picking up JNI library changes
                         newTask.outputs.upToDateWhen { false }
                     }
                 }
